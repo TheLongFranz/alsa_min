@@ -8,4 +8,4 @@ FILES ${PROJECT_SOURCE_DIR}/include/alsa_min/alsa_min.hpp)
 
 set_property(TARGET alsa_min_alsa_min PROPERTY EXPORT_NAME ${PROJECT_NAME})
 
-target_compile_features(alsa_min_alsa_min INTERFACE cxx_std_23)
+target_compile_features(alsa_min_alsa_min INTERFACE cxx_std_26)
