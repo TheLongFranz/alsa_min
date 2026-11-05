@@ -11,3 +11,8 @@
 TEST_CASE("Hello, World") {
   REQUIRE(hello_world() == "Hello, world!");
 }
+
+TEST_CASE("play silence") {
+  CHECK(play_silence() == 0);
+  REQUIRE(play_silence() == 0);
+}
