@@ -8,5 +8,3 @@ auto hello_world() -> std::string {
     std::println("{}", msg);
     return msg;
 } 
-
-s

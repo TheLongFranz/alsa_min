@@ -14,6 +14,6 @@ endif()
 include(Catch)
 
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain)
-target_link_libraries(tests PRIVATE alsa::alsa)
+target_link_libraries(tests PRIVATE alsa_min::alsa_min)
 
 catch_discover_tests(tests DISCOVERY_MODE PRE_TEST)

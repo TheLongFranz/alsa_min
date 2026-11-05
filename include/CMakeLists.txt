@@ -1,11 +1,11 @@
-add_library(alsa_alsa INTERFACE)
-add_library(alsa::alsa ALIAS alsa_alsa)
+add_library(alsa_min_alsa_min INTERFACE)
+add_library(alsa_min::alsa_min ALIAS alsa_min_alsa_min)
 
-target_sources(alsa_alsa 
+target_sources(alsa_min_alsa_min 
 PUBLIC FILE_SET HEADERS
 BASE_DIRS ${PROJECT_SOURCE_DIR}/include/
-FILES ${PROJECT_SOURCE_DIR}/include/alsa/alsa.hpp)
+FILES ${PROJECT_SOURCE_DIR}/include/alsa_min/alsa_min.hpp)
 
-set_property(TARGET alsa_alsa PROPERTY EXPORT_NAME ${PROJECT_NAME})
+set_property(TARGET alsa_min_alsa_min PROPERTY EXPORT_NAME ${PROJECT_NAME})
 
-target_compile_features(alsa_alsa INTERFACE cxx_std_23)
+target_compile_features(alsa_min_alsa_min INTERFACE cxx_std_23)

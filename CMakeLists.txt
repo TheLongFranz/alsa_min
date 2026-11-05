@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28.1)
 
-project(alsa 
+project(alsa_min 
 VERSION 0.0.1
 DESCRIPTION "minimal alsa example"
 LANGUAGES CXX)
