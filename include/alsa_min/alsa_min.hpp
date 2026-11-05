@@ -17,7 +17,7 @@
 
 inline auto hello_world() -> std::string {
   static constexpr auto vec =
-    std::views::iota(0, 16) | std::ranges::to<std::inplace_vector<int, 256>>();
+    std::views::iota(0, 16) | std::ranges::to<std::inplace_vector<int, 16>>();
   const auto msg{std::string{"Hello, world!"}};
   std::println("{}", msg);
   for (const auto it: vec) {
