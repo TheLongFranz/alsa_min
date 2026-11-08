@@ -1,123 +1,205 @@
-// libstdc++ 16 snapshots use the C++26-deprecated std::is_trivial_v inside
-// <inplace_vector>; clang reports it at the instantiation site even though it
-// lives in a system header. Silence it for this header only.
+#include <algorithm>
+#include <alsa/asoundlib.h>
 #include <array>
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#endif
-#include <inplace_vector>
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+// ///> shenanigans
+// #ifdef __clang__
+// #pragma clang diagnostic push
+// #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+// #include <inplace_vector>
+// #pragma clang diagnostic pop
+// #endif
+
+#include <poll.h>
+
+#include <cmath>
+#include <limits>
+#include <numbers>
 #include <print>
 #include <ranges>
+#include <span>
+#include <stop_token>
 #include <string>
 #include <utility>
 
-#include <alsa/asoundlib.h>
+static constexpr auto buffer_size{std::size_t{4096}};
+static constexpr auto max_loop{std::size_t{512}};
+static constexpr auto channel_count{std::int16_t{2}};
+static constexpr auto device_name{std::string{"default"}};
+static constexpr auto timeout{std::size_t{1000}};
+static auto           sample_rate{std::uint32_t{96'000}}; // NOLINT
+snd_pcm_t*            playback_handle;                    // NOLINT
+// short      buf[4096];
+static std::array<std::int16_t, buffer_size * channel_count> buf{}; // NOLINT
 
-static constexpr auto buffer_size{std::size_t{128}};
-static constexpr auto sample_rate{std::size_t{44100}};
-
-inline auto hello_world() -> std::string {
-  static constexpr auto vec =
-    std::views::iota(0, 16) | std::ranges::to<std::inplace_vector<int, 16>>();
-  const auto msg{std::string{"Hello, world!"}};
-  std::println("{}", msg);
-  for (const auto it: vec) {
-    std::println("{}", it);
-  }
-  return msg;
-}
-
-// TODO make a nice abstraction around play_silence
-// TODO get_audio_devices
-// TODO test signals, sin, square, sawtooth, triangle, noise
-
-struct audio_device_config {
-  std::array<std::int16_t, buffer_size> buf{};
-  snd_pcm_t*                            playback_handle{};
-  snd_pcm_hw_params_t*                  hw_params{};
-  // const char*                           name{std::getenv("MY_LIB_PCM_DEVICE")}; // NOLINT
-  unsigned int fs = static_cast<unsigned int>(sample_rate);
+struct wave_config {
+  double freq{}, rate{};
 };
 
-int play_silence() { // NOLINT
-  int i{};
-  auto [buf, playback_handle, hw_params, fs] = audio_device_config{};
+inline void sine(
+  std::span<std::int16_t> out, std::size_t channels, const wave_config& config, double& phase
+) noexcept {
+  constexpr auto tau{2.0 * std::numbers::pi};
+  constexpr auto amp{0.5 * std::numeric_limits<std::int16_t>::max()};
+  const auto     step{tau * config.freq / config.rate};
+
+  for (const auto frame: out | std::views::chunk(channels)) {
+    std::ranges::fill(frame, static_cast<int16_t>(amp * std::sin(phase)));
+    phase += step;
+    if (phase >= tau) {
+      phase -= tau;
+    }
+  }
+}
+
+inline int playback_callback(snd_pcm_sframes_t nframes) {
+  int               err{};
+  static auto       phase{double{0}}; // NOLINT
+  const wave_config config{.freq = timeout, .rate = static_cast<double>(sample_rate)};
+
+  std::println("playback callback called with {} frames", nframes);
+
+  /* ... fill buf with data ... */
+  sine(buf, channel_count, config, phase);
+
+  if (err = static_cast<int>(snd_pcm_writei(playback_handle, buf.data(), nframes)); err < 0) {
+    std::println("write failed {}", snd_strerror(err));
+  }
+
+  return err;
+}
+
+int interrupt(std::stop_token stop) { // NOLINT
+
+  snd_pcm_hw_params_t* hw_params{};
+  snd_pcm_sw_params_t* sw_params{};
+  snd_pcm_sframes_t    frames_to_deliver{};
+  // int                  nfds{};
+  int err{};
+  // struct pollfd*       pfds{};
 
   if (
-    const int err = snd_pcm_open(&playback_handle, "default", SND_PCM_STREAM_PLAYBACK, 0); err < 0
+    err = snd_pcm_open(&playback_handle, device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0); err < 0
   ) {
-    std::println(stderr, "cannot open audio device {} ({})", "default", snd_strerror(err));
+    std::println("cannot open audio device {} ({})", device_name, snd_strerror(err));
     return 1;
   }
 
-  if (const int err = snd_pcm_hw_params_malloc(&hw_params); err < 0) {
-    std::println(stderr, "cannot allocate hardware parameter structure ({})", snd_strerror(err));
+  if (err = snd_pcm_hw_params_malloc(&hw_params); err < 0) {
+    std::println("cannot allocate hardware parameter structure ({})", snd_strerror(err));
     return 1;
   }
 
-  if (const int err = snd_pcm_hw_params_any(playback_handle, hw_params); err < 0) {
-    std::println(stderr, "cannot initialize hardware parameter structure ({})", snd_strerror(err));
+  if (err = snd_pcm_hw_params_any(playback_handle, hw_params); err < 0) {
+    std::println("cannot initialize hardware parameter structure ({})", snd_strerror(err));
     return 1;
   }
 
   if (
-    const int err =
-      snd_pcm_hw_params_set_access(playback_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    err = snd_pcm_hw_params_set_access(playback_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
     err < 0
   ) {
-    std::println(stderr, "cannot set access type ({})", snd_strerror(err));
+    std::println("cannot set access type ({})", snd_strerror(err));
     return 1;
   }
 
   if (
-    const int err = snd_pcm_hw_params_set_format(playback_handle, hw_params, SND_PCM_FORMAT_S16_LE);
-    err < 0
+    err = snd_pcm_hw_params_set_format(playback_handle, hw_params, SND_PCM_FORMAT_S16_LE); err < 0
   ) {
-    std::println(stderr, "cannot set sample format ({})", snd_strerror(err));
+    std::println("cannot set sample format ({})", snd_strerror(err));
     return 1;
   }
 
   if (
-    const int err = snd_pcm_hw_params_set_rate_near(playback_handle, hw_params, &fs, nullptr);
+    err = snd_pcm_hw_params_set_rate_near(playback_handle, hw_params, &sample_rate, nullptr);
     err < 0
   ) {
-    std::println(stderr, "cannot set sample rate ({})", snd_strerror(err));
+    std::println("cannot set sample rate ({})", snd_strerror(err));
     return 1;
   }
 
-  if (const int err = snd_pcm_hw_params_set_channels(playback_handle, hw_params, 2); err < 0) {
-    std::println(stderr, "cannot set channel count ({})", snd_strerror(err));
+  if (err = snd_pcm_hw_params_set_channels(playback_handle, hw_params, channel_count); err < 0) {
+    std::println("cannot set channel count ({})", snd_strerror(err));
     return 1;
   }
 
-  if (const int err = snd_pcm_hw_params(playback_handle, hw_params); err < 0) {
-    std::println(stderr, "cannot set parameters ({})", snd_strerror(err));
+  if (err = snd_pcm_hw_params(playback_handle, hw_params); err < 0) {
+    std::println("cannot set parameters ({})", snd_strerror(err));
     return 1;
   }
 
   snd_pcm_hw_params_free(hw_params);
 
-  if (const int err = snd_pcm_prepare(playback_handle); err < 0) {
-    std::println(stderr, "cannot prepare audio interface for use ({})", snd_strerror(err));
+  /* tell ALSA to wake us up whenever 4096 or more frames
+     of playback data can be delivered. Also, tell
+     ALSA that we'll start the device ourselves.
+  */
+
+  if (err = snd_pcm_sw_params_malloc(&sw_params); err < 0) {
+    std::println("cannot allocate software parameters structure ({})", snd_strerror(err));
+    return 1;
+  }
+  if (err = snd_pcm_sw_params_current(playback_handle, sw_params); err < 0) {
+    std::println("cannot initialize software parameters structure ({})", snd_strerror(err));
+    return 1;
+  }
+  if (err = snd_pcm_sw_params_set_avail_min(playback_handle, sw_params, buffer_size); err < 0) {
+    std::println("cannot set minimum available count ({})", snd_strerror(err));
+    return 1;
+  }
+  if (err = snd_pcm_sw_params_set_start_threshold(playback_handle, sw_params, 0U); err < 0) {
+    std::println("cannot set start mode ({})", snd_strerror(err));
+    return 1;
+  }
+  if (err = snd_pcm_sw_params(playback_handle, sw_params); err < 0) {
+    std::println("cannot set software parameters ({})", snd_strerror(err));
     return 1;
   }
 
-  for (i = 0; i < 10; ++i) { // NOLINT
-    if (
-      std::int64_t err = snd_pcm_writei(playback_handle, buf.data(), buffer_size);
-      std::cmp_not_equal(err, buffer_size)
-    ) {
-      std::println(
-        stderr, "write to audio interface failed ({})", snd_strerror(static_cast<int>(err))
-      );
-      return 1;
+  /* the interface will interrupt the kernel every 4096 frames, and ALSA
+     will wake up this program very soon after that.
+  */
+
+  if (err = snd_pcm_prepare(playback_handle); err < 0) {
+    std::println("cannot prepare audio interface for use ({})", snd_strerror(err));
+    return 1;
+  }
+
+  while (!stop.stop_requested()) {
+    /* wait till the interface is ready for data, or 1 second
+       has elapsed.
+    */
+
+    if (err = snd_pcm_wait(playback_handle, timeout); err < 0) {
+      std::println("poll failed ({})", snd_strerror(errno));
+      break;
+    }
+
+    /* find out how much space is available for playback data */
+
+    if (frames_to_deliver = snd_pcm_avail_update(playback_handle); frames_to_deliver < 0) {
+      if (frames_to_deliver == -EPIPE) {
+        std::println("an xrun occured");
+        break;
+      }
+      std::println("unknown ALSA avail update return value ({})", frames_to_deliver);
+      break;
+    }
+
+    frames_to_deliver =
+      std::cmp_greater(frames_to_deliver, buffer_size) ? buffer_size : frames_to_deliver;
+
+    /* deliver the data */
+
+    if (playback_callback(frames_to_deliver) != frames_to_deliver) {
+      std::println("playback callback failed");
+      break;
     }
   }
 
