@@ -63,8 +63,10 @@ struct alsa_error {
   std::string err_msg;
 };
 
+using alsa_result = std::expected<void, alsa_error>;
+
 auto try_to(std::string_view message, auto func, auto... args) {
-  return [=] -> std::expected<void, alsa_error> {
+  return [=] -> alsa_result {
     if (const int result = func(args...); result < 0) {
       return std::unexpected<alsa_error>({.err_num = result, .err_msg = std::format("cannot {} {}", message, snd_strerror(result))});
     }
@@ -89,7 +91,7 @@ inline int playback_callback(snd_pcm_sframes_t nframes) { // this is basically t
   return err;
 }
 
-inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_error> {
+inline auto interrupt(const std::stop_token& stop) -> alsa_result {
 
   snd_pcm_hw_params_t* hw_params{};
   snd_pcm_sw_params_t* sw_params{};
@@ -103,7 +105,7 @@ inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_e
   };
 
   const auto configure_hardware =
-    std::expected<void, alsa_error>{}
+    alsa_result{}
       .and_then(try_to("open audio device", snd_pcm_open, &playback_handle, device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0))
       .and_then(try_to("allocate hardware parameter structure", snd_pcm_hw_params_malloc, &hw_params))
       .and_then(configure_hw("initialize hardware parameter structure", snd_pcm_hw_params_any))
@@ -127,7 +129,7 @@ inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_e
   };
 
   const auto configure_software =
-    std::expected<void, alsa_error>{}
+    alsa_result{}
       .and_then(try_to("allocate software parameters structure", snd_pcm_sw_params_malloc, &sw_params))
       .and_then(configure_sw("initialize software parameters structure", snd_pcm_sw_params_current))
       .and_then(configure_sw("set minimum available count", snd_pcm_sw_params_set_avail_min, buffer_size))
