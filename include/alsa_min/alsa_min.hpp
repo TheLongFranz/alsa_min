@@ -98,38 +98,48 @@ inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_e
   int err{};
   // struct pollfd*       pfds{};
 
-  const auto result =
-    try_to("open audio device", snd_pcm_open, &playback_handle, device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0)()
+  const auto configure_hw = [&](std::string_view message, auto func, auto... args) {
+    return try_to(message, func, playback_handle, hw_params, args...);
+  };
+
+  const auto configure_hardware =
+    std::expected<void, alsa_error>{}
+      .and_then(try_to("open audio device", snd_pcm_open, &playback_handle, device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0))
       .and_then(try_to("allocate hardware parameter structure", snd_pcm_hw_params_malloc, &hw_params))
       .and_then(try_to("initialize hardware parameter structure", snd_pcm_hw_params_any, playback_handle, hw_params))
-      .and_then(try_to("set access type", snd_pcm_hw_params_set_access, playback_handle, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED))
-      .and_then(try_to("set sample format", snd_pcm_hw_params_set_format, playback_handle, hw_params, SND_PCM_FORMAT_S16_LE))
-      .and_then(try_to("set sample rate", snd_pcm_hw_params_set_rate_near, playback_handle, hw_params, &sample_rate, nullptr))
-      .and_then(try_to("set channel count", snd_pcm_hw_params_set_channels, playback_handle, hw_params, channel_count))
-      .and_then(try_to("cannot set parameters", snd_pcm_hw_params, playback_handle, hw_params));
+      .and_then(configure_hw("set access type", snd_pcm_hw_params_set_access, SND_PCM_ACCESS_RW_INTERLEAVED))
+      .and_then(configure_hw("set sample format", snd_pcm_hw_params_set_format, SND_PCM_FORMAT_S16_LE))
+      .and_then(configure_hw("set sample rate", snd_pcm_hw_params_set_rate_near, &sample_rate, nullptr))
+      .and_then(configure_hw("set channel count", snd_pcm_hw_params_set_channels, channel_count))
+      .and_then(configure_hw("cannot set parameters", snd_pcm_hw_params));
 
-  if (!result.has_value()) {
-    return result;
+  if (!configure_hardware.has_value()) {
+    return configure_hardware;
   }
 
   snd_pcm_hw_params_free(hw_params);
 
   /* tell ALSA to wake us up whenever 4096 or more frames
-     of playback data can be delivered. Also, tell
-     ALSA that we'll start the device ourselves.
+  of playback data can be delivered. Also, tell
+  ALSA that we'll start the device ourselves.
   */
 
-  const auto figure_out_what_this_section_should_be_called =
-    try_to("allocate software parameters structure", snd_pcm_sw_params_malloc, &sw_params)()
-      .and_then(try_to("initialize software parameters structure", snd_pcm_sw_params_current, playback_handle, sw_params))
-      .and_then(try_to("set minimum available count", snd_pcm_sw_params_set_avail_min, playback_handle, sw_params, buffer_size))
-      .and_then(try_to("set start mode", snd_pcm_sw_params_set_start_threshold, playback_handle, sw_params, 0U))
-      .and_then(try_to("set software parameters", snd_pcm_sw_params, playback_handle, sw_params))
+  const auto configure_sw = [&](std::string_view message, auto func, auto... args) {
+    return try_to(message, func, playback_handle, sw_params, args...);
+  };
+
+  const auto configure_software =
+    std::expected<void, alsa_error>{}
+      .and_then(try_to("allocate software parameters structure", snd_pcm_sw_params_malloc, &sw_params))
+      .and_then(configure_sw("initialize software parameters structure", snd_pcm_sw_params_current))
+      .and_then(configure_sw("set minimum available count", snd_pcm_sw_params_set_avail_min, buffer_size))
+      .and_then(configure_sw("set start mode", snd_pcm_sw_params_set_start_threshold, 0U))
+      .and_then(configure_sw("set software parameters", snd_pcm_sw_params))
       // the interface will interrupt the kernel every 4096 frames, and ALSA will wake up this program very soon after that.
       .and_then(try_to("prepare audio interface for use", snd_pcm_prepare, playback_handle));
 
-  if (!figure_out_what_this_section_should_be_called.has_value()) {
-    return figure_out_what_this_section_should_be_called;
+  if (!configure_software.has_value()) {
+    return configure_software;
   }
 
   while (!stop.stop_requested()) {
