@@ -106,7 +106,7 @@ inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_e
     std::expected<void, alsa_error>{}
       .and_then(try_to("open audio device", snd_pcm_open, &playback_handle, device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0))
       .and_then(try_to("allocate hardware parameter structure", snd_pcm_hw_params_malloc, &hw_params))
-      .and_then(try_to("initialize hardware parameter structure", snd_pcm_hw_params_any, playback_handle, hw_params))
+      .and_then(configure_hw("initialize hardware parameter structure", snd_pcm_hw_params_any))
       .and_then(configure_hw("set access type", snd_pcm_hw_params_set_access, SND_PCM_ACCESS_RW_INTERLEAVED))
       .and_then(configure_hw("set sample format", snd_pcm_hw_params_set_format, SND_PCM_FORMAT_S16_LE))
       .and_then(configure_hw("set sample rate", snd_pcm_hw_params_set_rate_near, &sample_rate, nullptr))
@@ -119,10 +119,8 @@ inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_e
 
   snd_pcm_hw_params_free(hw_params);
 
-  /* tell ALSA to wake us up whenever 4096 or more frames
-  of playback data can be delivered. Also, tell
-  ALSA that we'll start the device ourselves.
-  */
+  // Tell ALSA to wake us up whenever 4096 or more frames of playback data can be delivered.
+  // Also, tell ALSA that we'll start the device ourselves.
 
   const auto configure_sw = [&](std::string_view message, auto func, auto... args) {
     return try_to(message, func, playback_handle, sw_params, args...);
@@ -143,9 +141,7 @@ inline auto interrupt(const std::stop_token& stop) -> std::expected<void, alsa_e
   }
 
   while (!stop.stop_requested()) {
-    /* wait till the interface is ready for data, or 1 second
-       has elapsed.
-    */
+    // wait till the interface is ready for data, or 1 second has elapsed.
 
     if (err = snd_pcm_wait(playback_handle, timeout); err < 0) {
       std::println("poll failed ({})", snd_strerror(errno));
