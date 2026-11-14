@@ -4,14 +4,13 @@ import std;
 // Linux stuff
 #include <alsa/asoundlib.h>
 
-static constexpr auto buffer_size{std::size_t{16}};
-static constexpr auto channel_count{std::int16_t{2}};
-static constexpr auto device_name{std::string{"default"}};
-static constexpr auto timeout{std::size_t{440}};
-static auto           sample_rate{std::uint32_t{96'000}}; // NOLINT
-snd_pcm_t*            playback_handle;                    // NOLINT
-// short      buf[4096];
-static std::array<std::int16_t, buffer_size * channel_count> buf{}; // NOLINT
+static constexpr auto                                        buffer_size{std::size_t{16}};
+static constexpr auto                                        channel_count{std::int16_t{2}};
+static constexpr auto                                        device_name{std::string{"default"}};
+static constexpr auto                                        timeout{std::size_t{440}};
+static auto                                                  sample_rate{std::uint32_t{96'000}}; // NOLINT
+snd_pcm_t*                                                   playback_handle;                    // NOLINT
+static std::array<std::int16_t, buffer_size * channel_count> buf{};                              // NOLINT
 
 struct wave_config {
   double freq{}, rate{};
@@ -38,23 +37,34 @@ struct alsa_error {
 
 using alsa_result = std::expected<void, alsa_error>;
 
-auto try_to(std::string_view message, auto func, auto... args) {
+[[nodiscard]] inline auto
+make_alsa_error(int result, std::string_view message, bool close_device = false, snd_pcm_t* handle = nullptr) // NOLINT
+  -> alsa_result {
+  if (close_device && handle != nullptr) {
+    snd_pcm_close(handle);
+  } else {
+    return std::unexpected(alsa_error{.err_num = 1, .err_msg = "cannot close a null playback_handle"});
+  }
+  return std::unexpected(alsa_error{.err_num = result, .err_msg = std::format("cannot {} {}", message, snd_strerror(result))});
+}
+
+[[nodiscard]] auto try_to(std::string_view message, auto func, auto... args) noexcept {
   return [=] -> alsa_result {
     if (const int result = func(args...); result < 0) {
-      return std::unexpected<alsa_error>({.err_num = result, .err_msg = std::format("cannot {} {}", message, snd_strerror(result))});
+      return make_alsa_error(result, message);
     }
     return {};
   };
 }
 
-inline int playback_callback(snd_pcm_sframes_t nframes) { // this is basically the 'process'
-  int               err{};
-  static auto       phase{double{0}}; // NOLINT
+[[nodiscard]] inline int playback_callback(snd_pcm_sframes_t nframes) { // this is basically the 'process' block
+  auto              err{int{}};
+  static auto       phase{double{}};
   const wave_config config{.freq = timeout, .rate = static_cast<double>(sample_rate)};
 
   std::println("playback callback called with {} frames", nframes);
 
-  /* ... fill buf with data ... */
+  // ... fill buf with data ...
   sine(buf, channel_count, config, phase);
 
   if (err = static_cast<int>(snd_pcm_writei(playback_handle, buf.data(), nframes)); err < 0) {
@@ -64,14 +74,12 @@ inline int playback_callback(snd_pcm_sframes_t nframes) { // this is basically t
   return err;
 }
 
-inline auto interrupt(const std::stop_token& stop) -> alsa_result {
+[[nodiscard]] inline auto interrupt(const std::stop_token& stop) -> alsa_result {
 
   snd_pcm_hw_params_t* hw_params{};
   snd_pcm_sw_params_t* sw_params{};
   snd_pcm_sframes_t    frames_to_deliver{};
-  // int                  nfds{};
-  int err{};
-  // struct pollfd*       pfds{};
+  int                  err{};
 
   const auto configure_hw = [&](std::string_view message, auto func, auto... args) {
     return try_to(message, func, playback_handle, hw_params, args...);
@@ -86,7 +94,7 @@ inline auto interrupt(const std::stop_token& stop) -> alsa_result {
       .and_then(configure_hw("set sample format", snd_pcm_hw_params_set_format, SND_PCM_FORMAT_S16_LE))
       .and_then(configure_hw("set sample rate", snd_pcm_hw_params_set_rate_near, &sample_rate, nullptr))
       .and_then(configure_hw("set channel count", snd_pcm_hw_params_set_channels, channel_count))
-      .and_then(configure_hw("cannot set parameters", snd_pcm_hw_params));
+      .and_then(configure_hw("set parameters", snd_pcm_hw_params));
 
   if (!configure_hardware.has_value()) {
     return configure_hardware;
@@ -119,31 +127,28 @@ inline auto interrupt(const std::stop_token& stop) -> alsa_result {
     // wait till the interface is ready for data, or 1 second has elapsed.
 
     if (err = snd_pcm_wait(playback_handle, timeout); err < 0) {
-      std::println("poll failed ({})", snd_strerror(errno));
-      break;
+      return make_alsa_error(errno, "poll failed", /*close_device=*/true, playback_handle);
     }
 
-    /* find out how much space is available for playback data */
+    // find out how much space is available for playback data
 
     if (frames_to_deliver = snd_pcm_avail_update(playback_handle); frames_to_deliver < 0) {
       if (frames_to_deliver == -EPIPE) {
-        std::println("an xrun occured");
-        break;
+        return make_alsa_error(-EPIPE, "an xrun occured", /*close_device=*/true, playback_handle);
       }
-      std::println("unknown ALSA avail update return value ({})", frames_to_deliver);
-      break;
+      return make_alsa_error(
+        1, std::format("unknown ALSA avail update return value {}", frames_to_deliver), /*close_device=*/true, playback_handle
+      );
     }
 
     frames_to_deliver = std::cmp_greater(frames_to_deliver, buffer_size) ? buffer_size : frames_to_deliver;
 
-    /* deliver the data */
+    // deliver the data
 
     if (playback_callback(frames_to_deliver) != frames_to_deliver) {
-      std::println("playback callback failed");
-      break;
+      return make_alsa_error(1, "playback callback failed", /*close_device=*/true, playback_handle);
     }
   }
 
-  snd_pcm_close(playback_handle);
   return {};
 }
