@@ -1,13 +1,12 @@
-// stdlib stuff
-#include <bits/chrono.h>
-#include <thread>
+// STL stuff
+import std;
+
+// linux system stuff
+#include <alsa/asoundlib.h>
 
 // third party stuff
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
-
-// linux system stuff
-#include <alsa/asoundlib.h>
 
 // our stuff
 #include <alsa_min/alsa_min.hpp>

@@ -13,6 +13,8 @@ if(NOT Catch2_FOUND)
 endif()
 include(Catch)
 
+target_compile_features(tests PRIVATE cxx_std_26)
+
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain)
 target_link_libraries(tests PRIVATE alsa_min::alsa_min)
 

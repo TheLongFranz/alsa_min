@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.28.1)
+cmake_minimum_required(VERSION 4.5.0)
+# I'm using import std, no apologies.
 
 project(alsa_min
     VERSION 0.0.1

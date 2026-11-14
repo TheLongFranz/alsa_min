@@ -1,35 +1,8 @@
-#include <algorithm>
+// STL stuff
+import std;
+
+// Linux stuff
 #include <alsa/asoundlib.h>
-#include <array>
-#include <cerrno>
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
-// ///> shenanigans
-// #ifdef __clang__
-// #pragma clang diagnostic push
-// #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-// #include <inplace_vector>
-// #pragma clang diagnostic pop
-// #endif
-
-#include <expected>
-#include <format>
-#include <poll.h>
-
-#include <cmath>
-#include <limits>
-#include <numbers>
-#include <print>
-#include <ranges>
-#include <span>
-#include <stop_token>
-#include <string>
-#include <string_view>
-#include <utility>
 
 static constexpr auto buffer_size{std::size_t{16}};
 static constexpr auto channel_count{std::int16_t{2}};
