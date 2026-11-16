@@ -1,5 +1,6 @@
 Diagnostics:
   UnusedIncludes: Strict
+  MissingIncludes: None
   ClangTidy:
     FastCheckFilter: Loose
 
@@ -16,6 +17,7 @@ Hover:
 
 Completion:
   AllScopes: Yes
+  HeaderInsertion: Never
 
 Index:
   Background: Build

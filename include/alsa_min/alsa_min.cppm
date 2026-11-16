@@ -8,8 +8,16 @@ export module alsa;
 // STL STUFF
 import std;
 
-constexpr auto timeout{std::size_t{1000}};
-constexpr auto sine_frequency{std::size_t{440}};
+static constexpr std::int16_t      default_channel_count{2};
+static constexpr std::uint32_t     default_sample_rate{48'000};
+static constexpr snd_pcm_uframes_t default_period_size{1024};
+static constexpr snd_pcm_uframes_t default_buffer_size{4096};
+
+export struct audio_stats {
+  std::atomic<std::uint64_t> wakeups;
+  std::atomic<std::uint64_t> frames;
+  std::atomic<std::uint64_t> xruns;
+};
 
 template<auto Free>
 struct c_deleter {
@@ -26,16 +34,53 @@ struct alsa_error {
 
 export using alsa_result = std::expected<void, alsa_error>;
 
-[[nodiscard]] inline auto make_alsa_error(int result, std::string_view message) // NOLINT
-  -> alsa_result {
+[[nodiscard]] inline auto make_alsa_error(int result, std::string_view message) -> alsa_result {
   return std::unexpected(alsa_error{.err_num = result, .err_msg = std::format("{}: {}", message, snd_strerror(result))});
 }
 
+export struct audio_process_spec {
+  std::uint32_t sample_rate;
+  std::size_t   max_frames;
+  std::int16_t  channels;
+};
+
+export class audio_processor {
+  public:
+  virtual ~audio_processor()                                           = default;
+  virtual auto prepare(const audio_process_spec& process_spec) -> void = 0;
+  virtual auto process(std::span<float> out) -> void                   = 0;
+};
+
+export class sine final : public audio_processor {
+  public:
+  explicit sine(const double& freq) : m_freq(freq) {}
+  auto prepare(const audio_process_spec& process_spec) -> void override {
+    m_process_spec = process_spec;
+    m_step         = {m_tau * m_freq / m_process_spec.sample_rate};
+  }
+
+  auto process(std::span<float> out) noexcept -> void override {
+    for (const auto frame: out | std::views::chunk(m_process_spec.channels)) {
+      std::ranges::fill(frame, m_amp * std::sin(m_phase));
+      m_phase += m_step;
+      if (m_phase >= m_tau) {
+        m_phase -= m_tau;
+      }
+    }
+  }
+
+  private:
+  audio_process_spec    m_process_spec{};
+  double                m_freq{}, m_phase{0}, m_step{};
+  static constexpr auto m_amp{0.5};
+  static constexpr auto m_tau{2.0 * std::numbers::pi};
+};
+
 export struct audio_device_config {
-  std::int16_t      channel_count{2};
-  std::uint32_t     sample_rate{96'000}; // NOLINT
-  snd_pcm_uframes_t period_size{16};     // NOLINT
-  snd_pcm_uframes_t buffer_size{64};     // NOLINT
+  std::int16_t      channel_count{default_channel_count};
+  std::uint32_t     sample_rate{default_sample_rate};
+  snd_pcm_uframes_t period_size{default_period_size};
+  snd_pcm_uframes_t buffer_size{default_buffer_size};
 };
 
 export class audio_device {
@@ -48,9 +93,82 @@ export class audio_device {
     };
   }
 
+  [[nodiscard]] auto recover(snd_pcm_sframes_t code, std::string_view message) -> alsa_result {
+    if (const int err = snd_pcm_recover(m_pcm.get(), static_cast<int>(code), 1); err < 0) {
+      return make_alsa_error(err, message);
+    }
+    return {};
+  }
+
   public:
-  audio_device(const pcm_handle& pcm, const audio_device_config& config) noexcept : m_config(config), m_pcm(pcm.get()) {}
-  [[nodiscard]] static auto open(const std::string& device_name, audio_device_config requested_config)
+  audio_device(pcm_handle pcm, const audio_device_config& negotiated) : m_config(negotiated), m_pcm(std::move(pcm)) {
+    const auto size{m_config.channel_count * m_config.period_size};
+    m_scratch_buffer.resize(size);
+    m_out_buffer.resize(size);
+  }
+
+  auto run(const std::stop_token& stop, audio_processor& proc, audio_stats& stats) -> alsa_result { // NOLINT
+    const auto handle_error = [&](snd_pcm_sframes_t code, std::string_view what) -> alsa_result {
+      if (code == -EPIPE) {
+        stats.xruns.fetch_add(1, std::memory_order_relaxed);
+      }
+      return recover(code, what);
+    };
+
+    proc.prepare({.sample_rate = m_config.sample_rate, .max_frames = m_config.period_size, .channels = m_config.channel_count});
+
+    while (!stop.stop_requested()) {
+      const int ready = snd_pcm_wait(m_pcm.get(), 1000);
+      if (ready == 0) {
+        return make_alsa_error(-EIO, "device stopped responding");
+      }
+
+      if (ready < 0) {
+        if (auto r = handle_error(ready, "wait for device"); !r.has_value()) {
+          return r;
+        }
+        continue;
+      }
+
+      stats.wakeups.fetch_add(1, std::memory_order_relaxed);
+
+      const auto avail = snd_pcm_avail_update(m_pcm.get());
+      if (avail < 0) {
+        if (auto r = handle_error(avail, "check available space"); !r.has_value()) {
+          return r;
+        }
+        continue;
+      }
+
+      if (std::cmp_less(avail, m_config.period_size)) {
+        continue;
+      }
+
+      proc.process(m_scratch_buffer);
+
+      std::ranges::transform(m_scratch_buffer, m_out_buffer.begin(), [](float x) {
+        return static_cast<std::int16_t>(std::clamp(x, -1.0F, 1.0F) * static_cast<float>(std::numeric_limits<std::int16_t>::max()));
+      });
+
+      auto pending = std::span<const std::int16_t>{m_out_buffer};
+
+      while (!pending.empty()) {
+        const auto frames  = static_cast<snd_pcm_uframes_t>(pending.size() / m_config.channel_count);
+        const auto written = snd_pcm_writei(m_pcm.get(), pending.data(), frames);
+        if (written < 0) {
+          if (auto r = handle_error(written, "write to device"); !r) {
+            return r;
+          }
+          break;
+        }
+        stats.frames.fetch_add(static_cast<std::uint64_t>(written), std::memory_order_relaxed);
+        pending = pending.subspan(static_cast<std::size_t>(written) * m_config.channel_count);
+      }
+    }
+    return {};
+  }
+
+  [[nodiscard]] static auto open(const std::string& device_name, audio_device_config& requested_config)
     -> std::expected<audio_device, alsa_error> {
     hw_params_handle hw_params{};
     sw_params_handle sw_params{};
@@ -60,7 +178,6 @@ export class audio_device {
       return try_to(message, func, pcm.get(), hw_params.get(), args...);
     };
 
-    // Both the playback handle and hardware parameters must be allocated before setting up
     if (const int err = snd_pcm_open(std::out_ptr(pcm), device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0); err < 0) {
       return std::unexpected(alsa_error{.err_num = err, .err_msg = std::format("{}: {}", "cannot open audio device", snd_strerror(err))});
     }
@@ -86,9 +203,6 @@ export class audio_device {
       return std::unexpected(configure_hardware.error());
     }
 
-    // Tell ALSA to wake us up whenever N or more frames of playback data can be delivered.
-    // Also, tell ALSA that we'll start the device ourselves.
-
     const auto configure_sw = [&](std::string_view message, auto func, auto... args) {
       return try_to(message, func, pcm.get(), sw_params.get(), args...);
     };
@@ -103,55 +217,64 @@ export class audio_device {
       alsa_result{}
         .and_then(configure_sw("initialize software parameters structure", snd_pcm_sw_params_current))
         .and_then(configure_sw("set minimum available count", snd_pcm_sw_params_set_avail_min, requested_config.period_size))
-        .and_then(configure_sw("set minimum available count", snd_pcm_sw_params_set_start_threshold, requested_config.buffer_size))
-        .and_then(configure_sw("set start mode", snd_pcm_sw_params_set_start_threshold, 0U))
+        .and_then(configure_sw("set minimum start threshold", snd_pcm_sw_params_set_start_threshold, requested_config.buffer_size))
         .and_then(configure_sw("set software parameters", snd_pcm_sw_params))
-        // the interface will interrupt the kernel every N frames, and ALSA will wake up this program very soon after that.
         .and_then(try_to("prepare audio interface for use", snd_pcm_prepare, pcm.get()));
 
     if (!configure_software.has_value()) {
       return std::unexpected(configure_software.error());
     }
 
-    return audio_device(pcm, requested_config);
+    return audio_device(std::move(pcm), requested_config);
   }
 
-  auto run(const std::stop_token& stop) const -> alsa_result {
-    snd_pcm_sframes_t frames_to_deliver{};
+  auto run(const std::stop_token& stop, audio_processor& proc) -> alsa_result { // NOLINT
+    proc.prepare({.sample_rate = m_config.sample_rate, .max_frames = m_config.period_size, .channels = m_config.channel_count});
 
     while (!stop.stop_requested()) {
-      // wait till the interface is ready for data, or 1 second has elapsed.
-
-      if (const int err = snd_pcm_wait(m_pcm.get(), timeout); err < 0) {
-        std::println("poll failed {}", snd_strerror(err));
-        break;
+      const int ready = snd_pcm_wait(m_pcm.get(), 1000);
+      if (ready == 0) {
+        return make_alsa_error(-EIO, "device stopped responding");
       }
 
-      // find out how much space is available for playback data
-
-      if (frames_to_deliver = snd_pcm_avail_update(m_pcm.get()); frames_to_deliver < 0) {
-        if (frames_to_deliver == -EPIPE) {
-          std::println("an xrun occured {}", snd_strerror(-EPIPE));
-          snd_pcm_recover(m_pcm.get(), -EPIPE, 0);
-          // break;
+      if (ready < 0) {
+        if (auto r = recover(ready, "wait for device"); !r.has_value()) {
+          return r;
         }
-        std::println("unknown ALSA avail update return value {}", frames_to_deliver);
-        break;
+        continue;
       }
 
-      frames_to_deliver =
-        std::cmp_greater(frames_to_deliver, m_config.buffer_size) ? static_cast<std::int64_t>(m_config.buffer_size) : frames_to_deliver;
-
-      // deliver the data
-      // replace with audio_processor.process()
-      if (const auto err = snd_pcm_writei(m_pcm.get(), m_out_buffer.data(), frames_to_deliver); err < 0) {
-        std::println("write failed {}", err);
-        break;
+      const auto avail = snd_pcm_avail_update(m_pcm.get());
+      if (avail < 0) {
+        if (auto r = recover(avail, "check available space"); !r.has_value()) {
+          return r;
+        }
+        continue;
       }
-      // if (playback_callback(frames_to_deliver, m_pcm) != frames_to_deliver) {
-      //   std::println("playback callback failed");
-      //   break;
-      // }
+
+      if (std::cmp_less(avail, m_config.period_size)) {
+        continue;
+      }
+
+      proc.process(m_scratch_buffer);
+
+      std::ranges::transform(m_scratch_buffer, m_out_buffer.begin(), [](float x) {
+        return static_cast<std::int16_t>(std::clamp(x, -1.0F, 1.0F) * static_cast<float>(std::numeric_limits<std::int16_t>::max()));
+      });
+
+      auto pending = std::span<const std::int16_t>{m_out_buffer};
+
+      while (!pending.empty()) {
+        const auto frames  = static_cast<snd_pcm_uframes_t>(pending.size() / m_config.channel_count);
+        const auto written = snd_pcm_writei(m_pcm.get(), pending.data(), frames);
+        if (written < 0) {
+          if (auto r = recover(written, "write to device"); !r) {
+            return r;
+          }
+          break;
+        }
+        pending = pending.subspan(static_cast<std::size_t>(written) * m_config.channel_count);
+      }
     }
     return {};
   }
@@ -162,150 +285,3 @@ export class audio_device {
   std::vector<float>        m_scratch_buffer;
   std::vector<std::int16_t> m_out_buffer;
 };
-
-std::atomic<int> xrun_count{}; // NOLINT
-
-struct wave_config {
-  double freq{}, rate{};
-};
-
-inline void sine(std::span<std::int16_t> out, std::size_t channels, const wave_config& config, double& phase) noexcept {
-  constexpr auto tau{2.0 * std::numbers::pi};
-  constexpr auto amp{0.5 * std::numeric_limits<std::int16_t>::max()};
-  const auto     step{tau * config.freq / config.rate};
-
-  for (const auto frame: out | std::views::chunk(channels)) {
-    std::ranges::fill(frame, static_cast<int16_t>(amp * std::sin(phase)));
-    phase += step;
-    if (phase >= tau) {
-      phase -= tau;
-    }
-  }
-}
-
-// [[nodiscard]] inline auto make_alsa_error(int result, std::string_view message) // NOLINT
-//   -> alsa_result {
-//   return std::unexpected(alsa_error{.err_num = result, .err_msg = std::format("{}: {}", message, snd_strerror(result))});
-// }
-
-// [[nodiscard]] auto try_to(std::string_view message, auto func, auto... args) noexcept {
-//   return [=] -> alsa_result {
-//     if (const int result = func(args...); result < 0) {
-//       return make_alsa_error(result, message);
-//     }
-//     return {};
-//   };
-// }
-
-// [[nodiscard]] inline int playback_callback(snd_pcm_sframes_t nframes, const audio_device& device) { // this is basically the 'process'
-// block
-//   auto err{int{}};
-//   // static auto       phase{double{}};
-//   // const wave_config config{.freq = sine_frequency, .rate = static_cast<double>(device.m_config.sample_rate)};
-
-//   // ... fill buf with data ...
-//   // sine(std::span{device.m_out_buffer}.first(nframes * device.m_config.channel_count), device.m_config.channel_count, config, phase);
-
-//   if (err = static_cast<int>(snd_pcm_writei(device.m_pcm.get(), device.m_out_buffer.data(), nframes)); err < 0) {
-//     std::println("write failed {}", snd_strerror(err));
-//   }
-
-//   return err;
-// }
-
-// export [[nodiscard]] inline auto interrupt(const std::stop_token& stop) -> alsa_result {
-//   audio_device_config config{}; // NOLINT
-//   audio_device        device{};
-//   if (const auto err = device.open("default", config); !err.has_value()) {
-//     return make_alsa_error(err.error().err_num, err.error().err_msg);
-//   }
-// hw_params_handle  hw_params{};
-// sw_params_handle  sw_params{};
-// snd_pcm_sframes_t frames_to_deliver{};
-
-// const auto configure_hw = [&](std::string_view message, auto func, auto... args) {
-//   return try_to(message, func, device.m_pcm.get(), hw_params.get(), args...);
-// };
-
-// // Both the playback handle and hardware parameters must be allocated before setting up
-// if (const int err = snd_pcm_open(std::out_ptr(device.m_pcm), device_name.c_str(), SND_PCM_STREAM_PLAYBACK, 0); err < 0) {
-//   return make_alsa_error(err, "open audio device");
-// }
-
-// if (const int err = snd_pcm_hw_params_malloc(std::out_ptr(hw_params)); err < 0) {
-//   return make_alsa_error(err, "allocate hardware parameter structure");
-// }
-
-// const auto configure_hardware =
-//   alsa_result{}
-//     .and_then(configure_hw("initialize hardware parameter structure", snd_pcm_hw_params_any))
-//     .and_then(configure_hw("set access type", snd_pcm_hw_params_set_access, SND_PCM_ACCESS_RW_INTERLEAVED))
-//     .and_then(configure_hw("set sample format", snd_pcm_hw_params_set_format, SND_PCM_FORMAT_S16_LE))
-//     .and_then(configure_hw("set channel count", snd_pcm_hw_params_set_channels, device.m_config.channel_count))
-//     .and_then(configure_hw("set sample rate", snd_pcm_hw_params_set_rate_near, &device.m_config.sample_rate, nullptr))
-//     .and_then(configure_hw("set period size", snd_pcm_hw_params_set_period_size_near, &device.m_config.period_size, nullptr))
-//     .and_then(configure_hw("set buffer size", snd_pcm_hw_params_set_buffer_size_near, &device.m_config.buffer_size))
-//     .and_then(configure_hw("set parameters", snd_pcm_hw_params));
-
-// if (!configure_hardware.has_value()) {
-//   return configure_hardware;
-// }
-
-// // Tell ALSA to wake us up whenever 4096 or more frames of playback data can be delivered.
-// // Also, tell ALSA that we'll start the device ourselves.
-
-// const auto configure_sw = [&](std::string_view message, auto func, auto... args) {
-//   return try_to(message, func, device.m_pcm.get(), sw_params.get(), args...);
-// };
-
-// if (const int err = snd_pcm_sw_params_malloc(std::out_ptr(sw_params)); err < 0) {
-//   return make_alsa_error(err, "allocate software parameters structure");
-// }
-
-// const auto configure_software =
-//   alsa_result{}
-//     .and_then(configure_sw("initialize software parameters structure", snd_pcm_sw_params_current))
-//     .and_then(configure_sw("set minimum available count", snd_pcm_sw_params_set_avail_min, device.m_config.period_size))
-//     .and_then(configure_sw("set minimum available count", snd_pcm_sw_params_set_start_threshold, device.m_config.buffer_size))
-//     .and_then(configure_sw("set start mode", snd_pcm_sw_params_set_start_threshold, 0U))
-//     .and_then(configure_sw("set software parameters", snd_pcm_sw_params))
-//     // the interface will interrupt the kernel every 4096 frames, and ALSA will wake up this program very soon after that.
-//     .and_then(try_to("prepare audio interface for use", snd_pcm_prepare, device.m_pcm.get()));
-
-// if (!configure_software.has_value()) {
-//   return configure_software;
-// }
-
-// while (!stop.stop_requested()) {
-//   // wait till the interface is ready for data, or 1 second has elapsed.
-
-//   if (const int err = snd_pcm_wait(device.m_pcm.get(), timeout); err < 0) {
-//     std::println("poll failed {}", snd_strerror(err));
-//     break;
-//   }
-
-//   // find out how much space is available for playback data
-
-//   if (frames_to_deliver = snd_pcm_avail_update(device.m_pcm.get()); frames_to_deliver < 0) {
-//     if (frames_to_deliver == -EPIPE) {
-//       std::println("an xrun occured {}", snd_strerror(-EPIPE));
-//       snd_pcm_recover(device.m_pcm.get(), -EPIPE, 0);
-//       // break;
-//     }
-//     std::println("unknown ALSA avail update return value {}", frames_to_deliver);
-//     break;
-//   }
-
-//   frames_to_deliver = std::cmp_greater(frames_to_deliver, device.m_config.buffer_size)
-//                         ? static_cast<std::int64_t>(device.m_config.buffer_size)
-//                         : frames_to_deliver;
-
-//   // deliver the data
-
-//   if (playback_callback(frames_to_deliver, device) != frames_to_deliver) {
-//     std::println("playback callback failed");
-//     break;
-//   }
-// }
-// return {};
-// }
