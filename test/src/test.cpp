@@ -8,7 +8,8 @@
 import std;
 
 // our stuff
-import alsa;
+import audio_processor;
+import audio_device;
 
 // NOLINTBEGIN
 #define CHECK_RESULT(var_expr)                                                                                                             \

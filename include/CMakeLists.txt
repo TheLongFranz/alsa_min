@@ -4,7 +4,9 @@ add_library(alsa_min::alsa_min ALIAS alsa_min_alsa_min)
 target_sources(alsa_min_alsa_min
     PUBLIC FILE_SET CXX_MODULES
     BASE_DIRS ${PROJECT_SOURCE_DIR}/include/
-    FILES ${PROJECT_SOURCE_DIR}/include/alsa_min/alsa_min.cppm)
+    FILES
+    ${PROJECT_SOURCE_DIR}/include/alsa_min/audio_device.cppm
+    ${PROJECT_SOURCE_DIR}/include/alsa_min/audio_processor.cppm)
 
 set_property(TARGET alsa_min_alsa_min PROPERTY EXPORT_NAME ${PROJECT_NAME})
 
