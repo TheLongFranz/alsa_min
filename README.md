@@ -4,6 +4,15 @@
 
 Bare bones example of getting an alsa audio device working before committing over in stompd. So if you see a large number of files being dropped in in one commit it was from here.
 
+## Prerequisites
+
+There's probably no need for you to use this repo but if you really want to then you need the following...
+
+- GCC 16 (For the standard library)
+- LLVM 23 (For clang and all the lovely tools (I do mean ALL of them))
+- Cmake 4.5.0 (For 'import std' & module support)
+- Ninja (For obvious reason)
+
 ## Minimal example
 
 ```cpp
