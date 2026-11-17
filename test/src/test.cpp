@@ -57,7 +57,6 @@ TEST_CASE("README") {
   alsa_min::audio_device_config config{};
   alsa_min::sine                proc(440);                                                // audio processor that outputs a sine
   auto                          device = alsa_min::audio_device::open("default", config); // factory that return std::unexpected on failure
-
   if (device) {
     std::jthread audio{[&](const std::stop_token& stop) { const auto result = device->run(stop, proc); }};
     std::this_thread::sleep_for(4s);
