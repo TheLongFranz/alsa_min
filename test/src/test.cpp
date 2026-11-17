@@ -28,16 +28,16 @@ TEST_CASE("sine wave plays without underruns") {
   using namespace std::chrono_literals;
   constexpr auto duration = 4s;
 
-  audio_device_config config{}; // NOLINT
-  auto                device = audio_device::open("default", config);
+  alsa_min::audio_device_config config{}; // NOLINT
+  auto                          device = alsa_min::audio_device::open("default", config);
   CHECK_RESULT(device);
 
   // open() writes the negotiated values back into config
   std::println("rate {}  period {}  buffer {}", config.sample_rate, config.period_size, config.buffer_size);
 
-  sine        proc{default_sine_frequency}; // NOLINT
-  audio_stats stats;
-  alsa_result result{};
+  alsa_min::sine        proc{default_sine_frequency}; // NOLINT
+  alsa_min::audio_stats stats;
+  alsa_min::alsa_result result{};
 
   {
     std::jthread audio{[&](const std::stop_token& stop) { result = device->run(stop, proc, stats); }};
@@ -54,10 +54,9 @@ TEST_CASE("sine wave plays without underruns") {
 // NOLINTBEGIN
 TEST_CASE("README") {
   using namespace std::chrono_literals;
-
-  audio_device_config config{};
-  sine                proc(440);                                      // audio processor that outputs a sine
-  auto                device = audio_device::open("default", config); // factory that return std::unexpected on failure
+  alsa_min::audio_device_config config{};
+  alsa_min::sine                proc(440);                                                // audio processor that outputs a sine
+  auto                          device = alsa_min::audio_device::open("default", config); // factory that return std::unexpected on failure
 
   if (device) {
     std::jthread audio{[&](const std::stop_token& stop) { const auto result = device->run(stop, proc); }};
@@ -66,6 +65,7 @@ TEST_CASE("README") {
     std::println("{}", device.error().err_msg);
   }
 
+  // thus endeth the example
   REQUIRE(device.has_value());
 }
 // NOLINTEND
