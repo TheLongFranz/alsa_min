@@ -20,8 +20,8 @@ namespace alsa_min {
   /**
    * @struct audio_stats: Optional stats used for monitoring the audio device state
    * @param wakeups: How many times alsa has awakened the device
-   * @param frames: How many frames have been processed by the audio device
-   * @param xruns: How many sample underrun or overruns have occurred, this will count +/- 1 per frame
+   * @param frames:  How many frames have been processed by the audio device
+   * @param xruns:   How many sample underrun or overruns have occurred, this will count +/- 1 per frame
    */
   export struct audio_stats {
     std::atomic<std::uint64_t> wakeups;
@@ -34,9 +34,9 @@ namespace alsa_min {
    *
    * struct for keeping device parameters neat and tidy, best to use designated initialisers
    * @param channel_count: Number of channels
-   * @param sample_rate: Number of samples per second
-   * @param period_size: Number of samples that alsa will provide at a time
-   * @param buffer_size: Maximum buffer size
+   * @param sample_rate:   Number of samples per second
+   * @param period_size:   Number of samples that alsa will provide at a time
+   * @param buffer_size:   Maximum buffer size
    */
   export struct audio_device_config {
     std::uint32_t     channel_count{default_channel_count};
@@ -50,7 +50,11 @@ namespace alsa_min {
    */
   template<auto Free>
   struct c_deleter {
-    void operator()(auto* p) const noexcept { Free(p); }
+    void operator()(auto* p) const noexcept
+      requires(std::invocable<decltype(Free), decltype(p)>)
+    {
+      Free(p);
+    }
   };
 
   ///> @typedef unique_ptr with custom deleter for playback handle
@@ -81,6 +85,9 @@ namespace alsa_min {
     return std::unexpected(alsa_error{.err_num = result, .err_msg = std::format("{}: {}", message, snd_strerror(result))});
   }
 
+  template<class Func, class... Args>
+  concept alsa_call = std::invocable<Func, Args...> && std::same_as<std::invoke_result_t<Func, Args...>, int>;
+
   /**
    * @class audio_device
    * @brief Always create this class using the open() factory function,
@@ -93,7 +100,10 @@ namespace alsa_min {
     std::vector<float>        m_scratch_buffer;
     std::vector<std::int32_t> m_out_buffer;
 
-    [[nodiscard]] static auto try_to(std::string_view message, auto func, auto... args) noexcept {
+    template<class Func, class... Args>
+    [[nodiscard]] static auto try_to(std::string_view message, Func func, Args... args) noexcept
+      requires(alsa_call<Func, Args...>)
+    {
       return [=] -> alsa_result {
         if (const int result = func(args...); result < 0) {
           return make_alsa_error(result, message);

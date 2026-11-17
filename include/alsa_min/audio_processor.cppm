@@ -17,7 +17,7 @@ namespace alsa_min {
 public:
     virtual ~audio_processor()                                           = default;
     virtual auto prepare(const audio_process_spec& process_spec) -> void = 0;
-    virtual auto process(std::span<float> out) -> void                   = 0;
+    virtual auto process(std::span<float> out) noexcept -> void          = 0;
   };
 
   export class sine final : public audio_processor {
