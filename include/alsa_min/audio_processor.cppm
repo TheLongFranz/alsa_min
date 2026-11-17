@@ -6,8 +6,8 @@ import std;
 
 export struct audio_process_spec {
   std::uint32_t sample_rate;
+  std::uint32_t channels;
   std::size_t   max_frames;
-  std::int16_t  channels;
 };
 
 export class audio_processor {
@@ -22,7 +22,7 @@ export class sine final : public audio_processor {
   explicit sine(const double& freq) : m_freq(freq) {}
   auto prepare(const audio_process_spec& process_spec) -> void override {
     m_process_spec = process_spec;
-    m_step         = {m_tau * m_freq / m_process_spec.sample_rate};
+    m_step         = {m_tau * m_freq / static_cast<double>(m_process_spec.sample_rate)};
   }
 
   auto process(std::span<float> out) noexcept -> void override {

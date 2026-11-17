@@ -9,7 +9,8 @@ Bare bones example of getting an alsa audio device working before committing ove
 ```cpp
 import std;
 
-import alsa;
+import audio_processor;
+import audio_device;
 
 int main() {
   using namespace std::chrono_literals;
