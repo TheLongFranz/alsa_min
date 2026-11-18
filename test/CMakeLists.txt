@@ -18,4 +18,6 @@ target_compile_features(tests PRIVATE cxx_std_26)
 target_link_libraries(tests PRIVATE Catch2::Catch2WithMain)
 target_link_libraries(tests PRIVATE alsa_min::alsa_min)
 
-catch_discover_tests(tests DISCOVERY_MODE PRE_TEST)
+set(ALSA_MIN_TEST_DEVICE "hw:Loopback,0" CACHE STRING "ALSA device the hardware tests open")
+catch_discover_tests(tests DISCOVERY_MODE PRE_TEST
+    PROPERTIES ENVIRONMENT "ALSA_MIN_DEVICE=${ALSA_MIN_TEST_DEVICE}")

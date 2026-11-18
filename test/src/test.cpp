@@ -47,7 +47,9 @@ TEST_CASE("duplex passthrough without xruns") {
   CHECK_RESULT(device);
 
   // open() writes the negotiated values back into config
-  std::println("rate {}  period {}  buffer {}", config.sample_rate, config.period_size, config.buffer_size, device->is_linked());
+  std::println(
+    "rate {}  period {}  buffer {} linked {} name {}", config.sample_rate, config.period_size, config.buffer_size, device->is_linked(), name
+  );
 
   alsa_min::passthrough proc;
   alsa_min::audio_stats stats;
@@ -69,14 +71,17 @@ TEST_CASE("sine wave plays without xruns") {
   using namespace std::chrono_literals;
   constexpr auto duration = 4s;
 
+  const char*       env  = std::getenv("ALSA_MIN_DEVICE"); // NOLINT
+  const std::string name = env != nullptr ? env : "default";
+
   alsa_min::audio_device_config config{}; // NOLINT
-  auto                          device = alsa_min::audio_device::open("default", config);
+  auto                          device = alsa_min::audio_device::open(name, config);
   CHECK_RESULT(device);
 
   // open() writes the negotiated values back into config
   std::println("rate {}  period {}  buffer {}", config.sample_rate, config.period_size, config.buffer_size);
 
-  alsa_min::sine        proc{default_sine_frequency}; // NOLINT
+  alsa_min::sine        proc{default_sine_frequency};
   alsa_min::audio_stats stats;
   alsa_min::alsa_result result{};
 
@@ -96,7 +101,7 @@ TEST_CASE("sine wave plays without xruns") {
 TEST_CASE("README") {
   using namespace std::chrono_literals;
   alsa_min::audio_device_config config{};
-  alsa_min::sine                proc(440);                                                // audio processor that outputs a sine
+  alsa_min::passthrough         proc;                                                     // audio processor that outputs a sine
   auto                          device = alsa_min::audio_device::open("default", config); // factory that return std::unexpected on failure
   if (device) {
     std::jthread audio{[&](const std::stop_token& stop) { const auto result = device->run(stop, proc); }};

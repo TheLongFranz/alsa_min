@@ -273,7 +273,12 @@ public:
         return make_alsa_error(-EINVAL, "negotiated playback and capture config don't match");
       }
 
-      const bool linked = snd_pcm_link(capture.get(), playback.get()) == 0;
+      const int link_err = snd_pcm_link(capture.get(), playback.get());
+      if (link_err < 0) {
+        std::println(stderr, "link failed: {}", snd_strerror(link_err));
+      }
+      const bool linked = link_err == 0;
+      // const bool linked = snd_pcm_link(capture.get(), playback.get()) == 0;
 
       return audio_device(std::move(capture), std::move(playback), requested_config, linked);
     }
