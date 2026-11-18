@@ -24,7 +24,48 @@ import audio_device;
 
 static constexpr double default_sine_frequency{440.0};
 
-TEST_CASE("sine wave plays without underruns") {
+TEST_CASE("passthrough copies input to output") {
+  alsa_min::passthrough proc;
+  proc.prepare({.sample_rate = 48'000, .channels = 2, .max_frames = 4}); // NOLINT
+
+  std::vector<float> in{0.1F, -0.2F, 0.3F, -0.4F, 0.5F, -0.6F, 0.7F, -0.8F}; // NOLINT
+  std::vector<float> out(in.size());
+  proc.process(in, out);
+
+  REQUIRE(out == in);
+}
+
+TEST_CASE("duplex passthrough without xruns") {
+  using namespace std::chrono_literals;
+  constexpr auto duration = 4s;
+
+  const char*       env  = std::getenv("ALSA_MIN_DEVICE"); // NOLINT
+  const std::string name = env != nullptr ? env : "default";
+
+  alsa_min::audio_device_config config{}; // NOLINT
+  auto                          device = alsa_min::audio_device::open(name, config);
+  CHECK_RESULT(device);
+
+  // open() writes the negotiated values back into config
+  std::println("rate {}  period {}  buffer {}", config.sample_rate, config.period_size, config.buffer_size, device->is_linked());
+
+  alsa_min::passthrough proc;
+  alsa_min::audio_stats stats;
+  alsa_min::alsa_result result{};
+
+  {
+    std::jthread audio{[&](const std::stop_token& stop) { result = device->run(stop, proc, stats); }};
+    std::this_thread::sleep_for(duration);
+  }
+
+  CHECK_RESULT(result);
+  CHECK(stats.xruns.load() == 0);
+
+  const auto expected = config.sample_rate * std::chrono::duration<double>(duration).count();
+  CHECK(static_cast<double>(stats.frames.load()) == Catch::Approx(expected).epsilon(0.1)); // NOLINT
+}
+
+TEST_CASE("sine wave plays without xruns") {
   using namespace std::chrono_literals;
   constexpr auto duration = 4s;
 

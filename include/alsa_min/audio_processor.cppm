@@ -15,12 +15,18 @@ namespace alsa_min {
    */
   export class audio_processor {
 public:
-    virtual ~audio_processor()                                           = default;
-    virtual auto prepare(const audio_process_spec& process_spec) -> void = 0;
-    virtual auto process(std::span<float> out) noexcept -> void          = 0;
+    virtual ~audio_processor()                                                       = default;
+    virtual auto prepare(const audio_process_spec& process_spec) -> void             = 0;
+    virtual auto process(std::span<float> in, std::span<float> out) noexcept -> void = 0;
   };
 
-  export class sine final : public audio_processor {
+  export class passthrough : public audio_processor {
+public:
+    auto prepare([[maybe_unused]] const audio_process_spec& process_spec) -> void override {}
+    auto process(std::span<float> in, std::span<float> out) noexcept -> void override { std::ranges::copy(in, out.begin()); }
+  };
+
+  export class sine : public audio_processor {
 public:
     explicit sine(const double& freq) : m_freq(freq) {}
     auto prepare(const audio_process_spec& process_spec) -> void override {
@@ -28,7 +34,7 @@ public:
       m_step         = {m_tau * m_freq / static_cast<double>(m_process_spec.sample_rate)};
     }
 
-    auto process(std::span<float> out) noexcept -> void override {
+    auto process(std::span<float> /*in*/, std::span<float> out) noexcept -> void override {
       for (const auto frame: out | std::views::chunk(m_process_spec.channels)) {
         std::ranges::fill(frame, m_amp * std::sin(m_phase));
         m_phase += m_step;
