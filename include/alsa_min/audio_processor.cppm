@@ -3,6 +3,19 @@ module;
 export module audio_processor;
 
 import std;
+
+#if defined(__has_feature) && __has_feature(realtime_sanitizer)
+#define NONBLOCKING [[clang::nonblocking]]
+#define BLOCKING [[clang::blocking]]
+#define NONALLOCATING [[clang::nonallocating]]
+#define ALLOCATING [[clang::allocating]]
+#elif
+#define NONBLOCKING
+#define BLOCKING
+#define NONALLOCATING
+#define ALLOCATING
+#endif
+
 namespace alsa_min {
   export struct audio_process_spec {
     std::uint32_t sample_rate;
@@ -23,7 +36,7 @@ public:
   export class passthrough : public audio_processor {
 public:
     auto prepare([[maybe_unused]] const audio_process_spec& process_spec) -> void override {}
-    auto process(std::span<float> in, std::span<float> out) noexcept -> void override { std::ranges::copy(in, out.begin()); }
+    auto process(std::span<float> in, std::span<float> out) noexcept NONBLOCKING -> void override { std::ranges::copy(in, out.begin()); }
   };
 
   export class sine : public audio_processor {
@@ -34,7 +47,7 @@ public:
       m_step         = {m_tau * m_freq / static_cast<double>(m_process_spec.sample_rate)};
     }
 
-    auto process(std::span<float> /*in*/, std::span<float> out) noexcept -> void override {
+    auto process(std::span<float> /*in*/, std::span<float> out) noexcept NONBLOCKING -> void override {
       for (const auto frame: out | std::views::chunk(m_process_spec.channels)) {
         std::ranges::fill(frame, m_amp * std::sin(m_phase));
         m_phase += m_step;

@@ -11,6 +11,18 @@ import std;
 // Our stuff
 import audio_processor;
 
+#if defined(__has_feature) && __has_feature(realtime_sanitizer)
+#define NONBLOCKING [[clang::nonblocking]]
+#define BLOCKING [[clang::blocking]]
+#define NONALLOCATING [[clang::nonallocating]]
+#define ALLOCATING [[clang::allocating]]
+#elif
+#define NONBLOCKING
+#define BLOCKING
+#define NONALLOCATING
+#define ALLOCATING
+#endif
+
 namespace alsa_min {
   static constexpr std::uint32_t     default_channel_count{2};
   static constexpr std::uint32_t     default_sample_rate{48'000};
@@ -85,7 +97,7 @@ namespace alsa_min {
    * @param result: Result will always be an error value from alsa
    * @param message: Usually a descriptive message of what we were trying to accomplish
    */
-  [[nodiscard]] inline auto make_alsa_error(int result, std::string_view message) -> std::unexpected<alsa_error> {
+  [[nodiscard]] inline auto make_alsa_error(int result, std::string_view message) NONBLOCKING -> std::unexpected<alsa_error> {
     return std::unexpected(alsa_error{.err_num = result, .err_msg = std::format("{}: {}", message, snd_strerror(result))});
   }
 
@@ -109,7 +121,7 @@ namespace alsa_min {
     std::vector<std::int32_t> m_out_raw;
 
     template<class Func, class... Args>
-    [[nodiscard]] static auto try_to(std::string_view message, Func func, Args... args) noexcept
+    [[nodiscard]] static auto try_to(std::string_view message, Func func, Args... args) noexcept NONBLOCKING
       requires(alsa_call<Func, Args...>)
     {
       return [=] -> alsa_result {
@@ -120,7 +132,7 @@ namespace alsa_min {
       };
     }
 
-    [[nodiscard]] static auto configure(snd_pcm_t* pcm, audio_device_config& config) -> alsa_result {
+    [[nodiscard]] static auto configure(snd_pcm_t* pcm, audio_device_config& config) NONALLOCATING -> alsa_result {
       hw_params_handle hw_params{};
       sw_params_handle sw_params{};
 
@@ -168,7 +180,7 @@ namespace alsa_min {
         .and_then(sw_step("set software parameters", snd_pcm_sw_params));
     }
 
-    [[nodiscard]] auto read_frames(std::span<std::int32_t> dst) noexcept -> snd_pcm_sframes_t {
+    [[nodiscard]] auto read_frames(std::span<std::int32_t> dst) noexcept NONALLOCATING -> snd_pcm_sframes_t {
       while (!dst.empty()) {
         const auto received = snd_pcm_readi(
           m_capture.get(), dst.data(), static_cast<snd_pcm_uframes_t>(dst.size() / m_config.channel_count)
@@ -180,7 +192,7 @@ namespace alsa_min {
       }
       return 0;
     }
-    [[nodiscard]] auto write_frames(std::span<const std::int32_t> src) noexcept -> snd_pcm_sframes_t {
+    [[nodiscard]] auto write_frames(std::span<const std::int32_t> src) noexcept NONALLOCATING -> snd_pcm_sframes_t {
       while (!src.empty()) {
         const auto sent = snd_pcm_writei(
           m_playback.get(), src.data(), static_cast<snd_pcm_uframes_t>(src.size() / m_config.channel_count)
@@ -193,7 +205,7 @@ namespace alsa_min {
       return 0;
     }
 
-    [[nodiscard]] auto start_streams() -> alsa_result {
+    [[nodiscard]] auto start_streams() NONALLOCATING -> alsa_result {
       std::ranges::fill(m_out_raw, 0);
 
       for (snd_pcm_uframes_t filled{0}; filled < m_config.buffer_size;) {
@@ -215,7 +227,7 @@ namespace alsa_min {
       return {};
     }
 
-    [[nodiscard]] auto reset_streams() -> alsa_result {
+    [[nodiscard]] auto reset_streams() NONALLOCATING -> alsa_result {
       static_cast<void>(snd_pcm_drop(m_capture.get()));
       static_cast<void>(snd_pcm_drop(m_playback.get()));
       return alsa_result{}
@@ -223,7 +235,7 @@ namespace alsa_min {
         .and_then(try_to("prepare playback", snd_pcm_prepare, m_playback.get()));
     }
 
-    [[nodiscard]] auto handle_error(snd_pcm_sframes_t code, std::string_view what, audio_stats& stats) -> alsa_result {
+    [[nodiscard]] auto handle_error(snd_pcm_sframes_t code, std::string_view what, audio_stats& stats) NONBLOCKING -> alsa_result {
       if (code == -EINTR) {
         return {};
       }
@@ -234,11 +246,11 @@ namespace alsa_min {
       return make_alsa_error(static_cast<int>(code), what);
     }
 
-    static auto to_pcm_32(const float& sample) noexcept -> std::int32_t {
+    static auto to_pcm_32(const float& sample) noexcept NONBLOCKING -> std::int32_t {
       return static_cast<std::int32_t>(std::clamp(sample, -1.0F, 1.0F) * static_cast<double>(std::numeric_limits<std::int32_t>::max()));
     }
 
-    static auto from_pcm_32(const std::int32_t& sample) noexcept -> float { return static_cast<float>(sample / pcm_32_scale); }
+    static auto from_pcm_32(const std::int32_t& sample) noexcept NONBLOCKING -> float { return static_cast<float>(sample / pcm_32_scale); }
 
     [[nodiscard]] audio_device(pcm_handle capture, pcm_handle playback, const audio_device_config& negotiated, bool linked) :
         m_config(negotiated), m_capture(std::move(capture)), m_playback(std::move(playback)), m_linked(linked) {
@@ -291,7 +303,7 @@ public:
      * @param stats: object outside of this class which is updated atomically
      * @return std::expected<void> on success, std::unexpected<alsa_error> on failure
      */
-    [[nodiscard]] auto run(const std::stop_token& stop, audio_processor& proc, audio_stats& stats) -> alsa_result { // NOLINT
+    [[nodiscard]] auto run(const std::stop_token& stop, audio_processor& proc, audio_stats& stats) NONALLOCATING -> alsa_result { // NOLINT
       proc.prepare({.sample_rate = m_config.sample_rate, .channels = m_config.channel_count, .max_frames = m_config.period_size});
 
       if (auto r = start_streams(); !r.has_value()) {
@@ -353,7 +365,7 @@ public:
      * I'll need to have a think about how the chaining of effects will work.
      * @return std::expected<void> on success, std::unexpected<alsa_error> on failure
      */
-    auto run(const std::stop_token& stop, audio_processor& proc) -> alsa_result {
+    auto run(const std::stop_token& stop, audio_processor& proc) NONALLOCATING -> alsa_result {
       audio_stats stats; // Don't (always) want this
       return run(stop, proc, stats);
     }

@@ -97,7 +97,7 @@
             },
             "cacheVariables": {
                 "CMAKE_INSTALL_RPATH": "$ORIGIN/../lib",
-                "CMAKE_CXX_FLAGS": "-mcpu=cortex-a76 -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wno-system-headers -Wunreachable-code -Wuninitialized -Wold-style-cast -Werror -ftrivial-auto-var-init=pattern -fdiagnostics-color=always -ftemplate-backtrace-limit=0",
+                "CMAKE_CXX_FLAGS": "-fsanitize=realtime -mcpu=cortex-a76 -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wno-system-headers -Wunreachable-code -Wuninitialized -Wold-style-cast -Werror -ftrivial-auto-var-init=pattern -fdiagnostics-color=always -ftemplate-backtrace-limit=0",
                 "DEPLOY_HOST": "cm5"
             }
         },

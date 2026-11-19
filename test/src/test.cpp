@@ -11,6 +11,18 @@ import std;
 import audio_processor;
 import audio_device;
 
+#if defined(__has_feature) && __has_feature(realtime_sanitizer)
+#define NONBLOCKING [[clang::nonblocking]]
+#define BLOCKING [[clang::blocking]]
+#define NONALLOCATING [[clang::nonallocating]]
+#define ALLOCATING [[clang::allocating]]
+#elif
+#define NONBLOCKING
+#define BLOCKING
+#define NONALLOCATING
+#define ALLOCATING
+#endif
+
 // NOLINTBEGIN
 #define CHECK_RESULT(var_expr)                                                                                                             \
   do {                                                                                                                                     \
