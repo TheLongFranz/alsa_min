@@ -240,7 +240,6 @@ namespace alsa_min {
 
     static auto from_pcm_32(const std::int32_t& sample) noexcept -> float { return static_cast<float>(sample / pcm_32_scale); }
 
-public:
     [[nodiscard]] audio_device(pcm_handle capture, pcm_handle playback, const audio_device_config& negotiated, bool linked) :
         m_config(negotiated), m_capture(std::move(capture)), m_playback(std::move(playback)), m_linked(linked) {
       const auto size{m_config.channel_count * m_config.period_size};
@@ -250,6 +249,7 @@ public:
       m_out_raw.resize(size);
     }
 
+public:
     [[nodiscard]] static auto open(const std::string& device_name, audio_device_config& requested_config)
       -> std::expected<audio_device, alsa_error> {
       pcm_handle capture;
@@ -278,7 +278,6 @@ public:
         std::println(stderr, "link failed: {}", snd_strerror(link_err));
       }
       const bool linked = link_err == 0;
-      // const bool linked = snd_pcm_link(capture.get(), playback.get()) == 0;
 
       return audio_device(std::move(capture), std::move(playback), requested_config, linked);
     }
